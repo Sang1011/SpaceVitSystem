@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>331ee506-ba77-41ab-8e1a-3329e910078f</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.6" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.17.13" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SVS.Domain\SVS.Domain.csproj" />
+    <ProjectReference Include="..\SVS.Infrastructure\SVS.Infrastructure.csproj" />
+    <ProjectReference Include="..\SVS.Application\SVS.Application.csproj" />
+  </ItemGroup>
+
+</Project>

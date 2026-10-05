@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SVS.Api/SVS.Api.csproj" />
+    <Project Path="src/SVS.Application/SVS.Application.csproj" />
+    <Project Path="src/SVS.Domain/SVS.Domain.csproj" />
+    <Project Path="src/SVS.Infrastructure/SVS.Infrastructure.csproj" />
+  </Folder>
+</Solution>
