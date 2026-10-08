@@ -1,4 +1,6 @@
 using Scalar.AspNetCore;
+using SVS.Api.BackgroundServices;
+using SVS.Api.Endpoints;
 using SVS.Application;
 using SVS.Infrastructure;
 
@@ -8,7 +10,8 @@ var connectionString = builder.Configuration.GetConnectionString("Default")
     ?? throw new InvalidOperationException("Missing ConnectionStrings:Default");
 
 builder.Services.AddSvsApplication();
-builder.Services.AddSvsInfrastructure(connectionString);
+builder.Services.AddSvsInfrastructure(connectionString, builder.Configuration);
+builder.Services.AddHostedService<AiJobPollingService>();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -20,5 +23,6 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapHealthChecks("/health");
+app.MapRecordingEndpoints();
 
 app.Run();
