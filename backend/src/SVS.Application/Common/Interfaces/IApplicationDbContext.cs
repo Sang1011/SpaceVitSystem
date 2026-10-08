@@ -8,6 +8,9 @@ public interface IApplicationDbContext
     DbSet<User> Users { get; }
     DbSet<Space> Spaces { get; }
     DbSet<SpaceMember> SpaceMembers { get; }
+    DbSet<Recording> Recordings { get; }
+    DbSet<TranscriptionJob> TranscriptionJobs { get; }
+    DbSet<TranscriptSegment> TranscriptSegments { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }
