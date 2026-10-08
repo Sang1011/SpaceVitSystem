@@ -31,8 +31,78 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      AiService__BaseUrl: http://ai-service:8000
+      AiService__ApiKey: ${AI_SERVICE_TOKEN}
     ports:
       - "${API_PORT:-5000}:8080"
+    volumes:
+      - media:/data/media
+
+  ai-service:
+    profiles: ["ai"]
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    depends_on:
+      redis:
+        condition: service_started
+    environment:
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN}
+      MEDIA_ROOT: /data/media
+      STT_MODEL: large-v3-turbo
+      STT_DEVICE: auto
+      STT_BATCH: 8
+      STT_COMPUTE_TYPE: float16
+      MAX_AUDIO_SEC: 7260
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL}
+      GEMINI_THINKING_LEVEL: ${GEMINI_THINKING_LEVEL}
+    volumes:
+      - media:/data/media
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  ai-service-cpu:
+    profiles: ["ai-cpu"]
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ubuntu:24.04
+    depends_on:
+      redis:
+        condition: service_started
+    environment:
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN}
+      MEDIA_ROOT: /data/media
+      STT_MODEL: large-v3-turbo
+      STT_DEVICE: cpu
+      STT_BATCH: 0
+      STT_COMPUTE_TYPE: int8
+      MAX_AUDIO_SEC: 7260
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL}
+      GEMINI_THINKING_LEVEL: ${GEMINI_THINKING_LEVEL}
+    volumes:
+      - media:/data/media
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   pgdata:
+  media:
