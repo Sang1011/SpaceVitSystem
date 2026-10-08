@@ -22,6 +22,50 @@ namespace SVS.Infrastructure.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("SVS.Domain.Entities.Recording", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<double?>("DurationSec")
+                        .HasColumnType("double precision");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<string>("Language")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<string>("MediaKey")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<Guid>("SpaceId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SpaceId");
+
+                    b.ToTable("Recordings");
+                });
+
             modelBuilder.Entity("SVS.Domain.Entities.Space", b =>
                 {
                     b.Property<Guid>("Id")
@@ -67,6 +111,112 @@ namespace SVS.Infrastructure.Migrations
                     b.ToTable("SpaceMembers");
                 });
 
+            modelBuilder.Entity("SVS.Domain.Entities.TranscriptSegment", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<double>("EndSec")
+                        .HasColumnType("double precision");
+
+                    b.Property<int>("Index")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("RecordingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<double>("StartSec")
+                        .HasColumnType("double precision");
+
+                    b.Property<string>("Text")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RecordingId", "Index");
+
+                    b.ToTable("TranscriptSegments");
+                });
+
+            modelBuilder.Entity("SVS.Domain.Entities.TranscriptionJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("OutputLanguage")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<double>("Progress")
+                        .HasColumnType("double precision");
+
+                    b.Property<int?>("QueuePosition")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("RecordingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("SegmentsSynced")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("StageTimingsJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<int>("SubmitAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("SubmittedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SummaryError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("SummaryJson")
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RecordingId");
+
+                    b.HasIndex("Status");
+
+                    b.ToTable("TranscriptionJobs");
+                });
+
             modelBuilder.Entity("SVS.Domain.Entities.User", b =>
                 {
                     b.Property<Guid>("Id")
@@ -98,6 +248,17 @@ namespace SVS.Infrastructure.Migrations
                     b.ToTable("Users");
                 });
 
+            modelBuilder.Entity("SVS.Domain.Entities.Recording", b =>
+                {
+                    b.HasOne("SVS.Domain.Entities.Space", "Space")
+                        .WithMany()
+                        .HasForeignKey("SpaceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Space");
+                });
+
             modelBuilder.Entity("SVS.Domain.Entities.SpaceMember", b =>
                 {
                     b.HasOne("SVS.Domain.Entities.Space", "Space")
@@ -115,6 +276,35 @@ namespace SVS.Infrastructure.Migrations
                     b.Navigation("Space");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("SVS.Domain.Entities.TranscriptSegment", b =>
+                {
+                    b.HasOne("SVS.Domain.Entities.Recording", "Recording")
+                        .WithMany("Segments")
+                        .HasForeignKey("RecordingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Recording");
+                });
+
+            modelBuilder.Entity("SVS.Domain.Entities.TranscriptionJob", b =>
+                {
+                    b.HasOne("SVS.Domain.Entities.Recording", "Recording")
+                        .WithMany("Jobs")
+                        .HasForeignKey("RecordingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Recording");
+                });
+
+            modelBuilder.Entity("SVS.Domain.Entities.Recording", b =>
+                {
+                    b.Navigation("Jobs");
+
+                    b.Navigation("Segments");
                 });
 
             modelBuilder.Entity("SVS.Domain.Entities.Space", b =>
