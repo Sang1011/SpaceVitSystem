@@ -219,7 +219,11 @@ public sealed class TranscriptionJobCoordinator(
         foreach (var s in page.Segments)
             db.TranscriptSegments.Add(new TranscriptSegment
             {
-                RecordingId = job.RecordingId, Index = s.Index, StartSec = s.Start, EndSec = s.End, Text = s.Text,
+                RecordingId = job.RecordingId,
+                Index = s.Index,
+                StartSec = s.Start,
+                EndSec = s.End,
+                Text = s.Text,
             });
         job.SegmentsSynced = page.Next;
     }
@@ -235,7 +239,11 @@ public sealed class TranscriptionJobCoordinator(
             foreach (var s in result.Segments)
                 db.TranscriptSegments.Add(new TranscriptSegment
                 {
-                    RecordingId = job.RecordingId, Index = i++, StartSec = s.Start, EndSec = s.End, Text = s.Text,
+                    RecordingId = job.RecordingId,
+                    Index = i++,
+                    StartSec = s.Start,
+                    EndSec = s.End,
+                    Text = s.Text,
                 });
             job.SegmentsSynced = result.Segments.Count;
             recording.DurationSec = result.AudioSec ?? recording.DurationSec;

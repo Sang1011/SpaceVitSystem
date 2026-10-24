@@ -24,7 +24,7 @@ public sealed record AiJobResult(
 /// <summary>
 /// Giao diện giữa backend và AI service. Hiện triển khai bằng HTTP + polling (HttpAiJobClient). Đổi sang callback
 /// hoặc message queue chỉ cần thay triển khai và cách gọi SyncAsync của TranscriptionJobCoordinator.
-/// TODO(live-recording): luồng ghi âm trực tiếp dùng interface riêng (ILiveTranscriptionClient), không nhồi vào đây.
+/// Ghi âm trực tiếp dùng interface riêng (ILiveAiClient), không nhồi vào đây.
 /// </summary>
 public interface IAiJobClient
 {

@@ -8,7 +8,7 @@ public sealed record JobProgressUpdate(
 
 /// <summary>
 /// Đẩy tiến độ job về client. Hiện chưa có triển khai thật (no-op); giai đoạn 2 cài bản SignalR.
-/// TODO(live-recording): cũng dùng để đẩy transcript tăng dần của phiên ghi âm.
+/// Có thể dùng chung để đẩy transcript tăng dần của phiên ghi âm (giai đoạn SignalR).
 /// </summary>
 public interface IJobProgressNotifier
 {

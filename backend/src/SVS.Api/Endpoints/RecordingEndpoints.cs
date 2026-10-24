@@ -43,8 +43,7 @@ public static class RecordingEndpoints
         api.MapGet("/jobs/{id:guid}", GetJob);
         api.MapPost("/jobs/{id:guid}/cancel", CancelJob);
 
-        // TODO(live-recording): phiên ghi âm trực tiếp sẽ có nhóm endpoint riêng (/api/spaces/{id}/live-sessions...),
-        // không dùng chung endpoint upload. Xem docs/live-recording-todo.md.
+        // Ghi âm trực tiếp có nhóm endpoint riêng: xem LiveEndpoints.cs và docs/live-recording.md.
         return app;
     }
 
@@ -115,8 +114,12 @@ public static class RecordingEndpoints
 
         var recording = new Recording
         {
-            Id = recordingId, SpaceId = spaceId, FileName = SafeName(fileName), MediaKey = stored.MediaKey,
-            SizeBytes = stored.SizeBytes, Language = language,
+            Id = recordingId,
+            SpaceId = spaceId,
+            FileName = SafeName(fileName),
+            MediaKey = stored.MediaKey,
+            SizeBytes = stored.SizeBytes,
+            Language = language,
         };
         db.Recordings.Add(recording);
         try
@@ -125,7 +128,7 @@ public static class RecordingEndpoints
         }
         catch
         {
-            await storage.DeleteAsync(stored.MediaKey, CancellationToken.None); // không để file mồ côi
+            await storage.DeleteAsync(stored.MediaKey, CancellationToken.None);
             throw;
         }
 

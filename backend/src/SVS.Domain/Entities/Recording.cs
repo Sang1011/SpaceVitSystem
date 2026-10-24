@@ -16,7 +16,7 @@ public class Recording
     /// <summary>Ngôn ngữ lời nói: "vi" hoặc "en".</summary>
     public string Language { get; set; } = "vi";
 
-    // TODO(live-recording): bản ghi tạo từ phiên ghi âm trực tiếp dùng Source = Live (xem docs/live-recording-todo.md)
+    // Upload hoặc Live (bản ghi tạo từ phiên ghi âm trực tiếp; xem docs/live-recording.md)
     public RecordingSource Source { get; set; } = RecordingSource.Upload;
 
     public double? DurationSec { get; set; }

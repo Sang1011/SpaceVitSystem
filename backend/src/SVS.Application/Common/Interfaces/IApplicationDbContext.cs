@@ -11,6 +11,8 @@ public interface IApplicationDbContext
     DbSet<Recording> Recordings { get; }
     DbSet<TranscriptionJob> TranscriptionJobs { get; }
     DbSet<TranscriptSegment> TranscriptSegments { get; }
+    DbSet<LiveSession> LiveSessions { get; }
+    DbSet<RecordingChunk> RecordingChunks { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

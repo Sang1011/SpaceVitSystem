@@ -22,6 +22,97 @@ namespace SVS.Infrastructure.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("SVS.Domain.Entities.LiveSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AiRecreateCount")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("AiRegistered")
+                        .HasColumnType("boolean");
+
+                    b.Property<double>("ChunkSec")
+                        .HasColumnType("double precision");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<bool>("FinalizeSent")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("GapsJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<int>("HighestSeq")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Language")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<DateTimeOffset?>("LastChunkAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("NextExpectedSeq")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("OutputLanguage")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<int>("ReceivedChunks")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("RecordingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("SegmentsSynced")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("StopMode")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTimeOffset?>("StoppedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("TotalBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("TotalChunks")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RecordingId")
+                        .IsUnique();
+
+                    b.HasIndex("Status");
+
+                    b.ToTable("LiveSessions");
+                });
+
             modelBuilder.Entity("SVS.Domain.Entities.Recording", b =>
                 {
                     b.Property<Guid>("Id")
@@ -64,6 +155,42 @@ namespace SVS.Infrastructure.Migrations
                     b.HasIndex("SpaceId");
 
                     b.ToTable("Recordings");
+                });
+
+            modelBuilder.Entity("SVS.Domain.Entities.RecordingChunk", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<bool>("Forwarded")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid>("LiveSessionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("MediaKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Seq")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LiveSessionId", "Seq")
+                        .IsUnique();
+
+                    b.ToTable("RecordingChunks");
                 });
 
             modelBuilder.Entity("SVS.Domain.Entities.Space", b =>
@@ -248,6 +375,17 @@ namespace SVS.Infrastructure.Migrations
                     b.ToTable("Users");
                 });
 
+            modelBuilder.Entity("SVS.Domain.Entities.LiveSession", b =>
+                {
+                    b.HasOne("SVS.Domain.Entities.Recording", "Recording")
+                        .WithMany()
+                        .HasForeignKey("RecordingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Recording");
+                });
+
             modelBuilder.Entity("SVS.Domain.Entities.Recording", b =>
                 {
                     b.HasOne("SVS.Domain.Entities.Space", "Space")
@@ -257,6 +395,17 @@ namespace SVS.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Space");
+                });
+
+            modelBuilder.Entity("SVS.Domain.Entities.RecordingChunk", b =>
+                {
+                    b.HasOne("SVS.Domain.Entities.LiveSession", "LiveSession")
+                        .WithMany("Chunks")
+                        .HasForeignKey("LiveSessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("LiveSession");
                 });
 
             modelBuilder.Entity("SVS.Domain.Entities.SpaceMember", b =>
@@ -298,6 +447,11 @@ namespace SVS.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Recording");
+                });
+
+            modelBuilder.Entity("SVS.Domain.Entities.LiveSession", b =>
+                {
+                    b.Navigation("Chunks");
                 });
 
             modelBuilder.Entity("SVS.Domain.Entities.Recording", b =>

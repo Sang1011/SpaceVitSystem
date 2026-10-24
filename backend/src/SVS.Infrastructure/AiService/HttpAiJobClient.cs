@@ -6,6 +6,7 @@ using SVS.Application.Common.Interfaces;
 
 namespace SVS.Infrastructure.AiService;
 
+/// <summary>Gọi HTTP /v1 của AI service. JSON dùng snake_case theo hợp đồng (xem ai-service/README.md).</summary>
 public sealed class HttpAiJobClient(HttpClient http) : IAiJobClient
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)

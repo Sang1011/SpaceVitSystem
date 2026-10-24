@@ -2,7 +2,7 @@ namespace SVS.Domain.Entities;
 
 /// <summary>
 /// Một đoạn transcript của bản ghi. Khóa theo (RecordingId, Index), không gắn với một job duy nhất, để sau này
-/// chunk của luồng ghi âm trực tiếp (TODO(live-recording)) có thể thêm segment vào cùng Recording.
+/// các phiên ghi âm trực tiếp cũng ghi segment vào cùng Recording.
 /// </summary>
 public class TranscriptSegment
 {

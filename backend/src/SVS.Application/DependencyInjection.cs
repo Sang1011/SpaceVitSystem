@@ -8,6 +8,7 @@ public static class DependencyInjection
     public static IServiceCollection AddSvsApplication(this IServiceCollection services)
     {
         services.AddScoped<TranscriptionJobCoordinator>();
+        services.AddScoped<LiveSessionCoordinator>();
         return services;
     }
 }

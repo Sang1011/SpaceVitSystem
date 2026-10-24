@@ -13,6 +13,8 @@ public class SvsDbContext(DbContextOptions<SvsDbContext> options)
     public DbSet<Recording> Recordings => Set<Recording>();
     public DbSet<TranscriptionJob> TranscriptionJobs => Set<TranscriptionJob>();
     public DbSet<TranscriptSegment> TranscriptSegments => Set<TranscriptSegment>();
+    public DbSet<LiveSession> LiveSessions => Set<LiveSession>();
+    public DbSet<RecordingChunk> RecordingChunks => Set<RecordingChunk>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -67,6 +69,27 @@ public class SvsDbContext(DbContextOptions<SvsDbContext> options)
             e.HasOne(x => x.Recording).WithMany(r => r.Segments).HasForeignKey(x => x.RecordingId);
             // Không đặt unique: lúc thay transcript, xóa và thêm cùng (RecordingId, Index) trong một lần SaveChanges.
             e.HasIndex(x => new { x.RecordingId, x.Index });
+        });
+
+        b.Entity<LiveSession>(e =>
+        {
+            e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
+            e.Property(x => x.StopMode).HasConversion<string>().HasMaxLength(20);
+            e.Property(x => x.Language).HasMaxLength(8).IsRequired();
+            e.Property(x => x.OutputLanguage).HasMaxLength(8).IsRequired();
+            e.Property(x => x.Error).HasMaxLength(1000);
+            e.Property(x => x.ErrorCode).HasMaxLength(50);
+            e.Property(x => x.GapsJson).HasColumnType("jsonb");
+            e.HasOne(x => x.Recording).WithMany().HasForeignKey(x => x.RecordingId);
+            e.HasIndex(x => x.RecordingId).IsUnique();
+            e.HasIndex(x => x.Status); // poller quét các phiên đang hoạt động
+        });
+
+        b.Entity<RecordingChunk>(e =>
+        {
+            e.Property(x => x.MediaKey).HasMaxLength(512).IsRequired();
+            e.HasOne(x => x.LiveSession).WithMany(s => s.Chunks).HasForeignKey(x => x.LiveSessionId);
+            e.HasIndex(x => new { x.LiveSessionId, x.Seq }).IsUnique(); // chặn nhận trùng seq khi hai request chạy đua
         });
     }
 }
