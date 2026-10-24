@@ -1,3 +1,29 @@
+# Chạy hạ tầng:            docker compose up -d
+# Thêm API trong Docker:   docker compose --profile full up -d --build
+# Thêm AI service (GPU):   docker compose --profile ai up -d --build
+# AI service CPU dự phòng: docker compose --profile ai-cpu up -d --build   (chậm hơn nhiều; không phù hợp ghi âm trực tiếp)
+# Kiểm tra GPU:            docker compose --profile ai run --rm --no-deps ai-service python scripts/gpu_smoke_test.py
+#
+# Thư mục media dùng chung giữa backend và AI service:
+#   mặc định ./data/media (bind mount, backend chạy bằng `dotnet run` trên host cũng thấy được);
+#   đặt MEDIA_SOURCE=media trong .env để dùng named volume `media` nếu backend chỉ chạy trong Docker.
+
+x-media: &media ${MEDIA_SOURCE:-./data/media}:/data/media
+
+x-ai-service: &ai-service
+  volumes:
+    - *media
+    - hf-cache:/root/.cache/huggingface
+  ports:
+    - "127.0.0.1:${AI_SERVICE_PORT:-8000}:8000"   # chỉ máy host (dev); backend trong compose gọi qua http://ai-service:8000
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+    interval: 15s
+    timeout: 5s
+    retries: 10
+    start_period: 120s               # lần đầu phải tải model (~1.6 GB)
+  restart: unless-stopped
+
 services:
   postgres:
     image: pgvector/pgvector:pg17
@@ -20,6 +46,58 @@ services:
     ports:
       - "${REDIS_PORT:-6379}:6379"
 
+  ai-service:
+    <<: *ai-service
+    profiles: ["ai"]
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    networks:
+      default:
+        aliases: [ai-service]
+    environment:
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN}
+      MEDIA_ROOT: /data/media
+      STT_MODEL: large-v3-turbo
+      STT_DEVICE: cuda               # không dùng auto: lỗi CUDA phải lộ ra, không được âm thầm chạy CPU
+      STT_COMPUTE_TYPE: float16
+      STT_BATCH: 8
+      MAX_AUDIO_SEC: 7260
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      GEMINI_THINKING_LEVEL: ${GEMINI_THINKING_LEVEL:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  ai-service-cpu:
+    <<: *ai-service
+    profiles: ["ai-cpu"]
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ubuntu:24.04
+    networks:
+      default:
+        aliases: [ai-service]          # backend luôn gọi http://ai-service:8000 dù chạy bản GPU hay CPU
+    environment:
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN}
+      MEDIA_ROOT: /data/media
+      STT_MODEL: large-v3-turbo
+      STT_DEVICE: cpu
+      STT_COMPUTE_TYPE: int8
+      STT_BATCH: 8
+      MAX_AUDIO_SEC: 7260
+      LIVE_MAX_SESSIONS: 1
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      GEMINI_THINKING_LEVEL: ${GEMINI_THINKING_LEVEL:-}
+
   api:
     profiles: ["full"]
     build:
@@ -33,76 +111,13 @@ services:
       ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       AiService__BaseUrl: http://ai-service:8000
       AiService__ApiKey: ${AI_SERVICE_TOKEN}
+      Media__RootPath: /data/media     # bắt buộc: nếu thiếu, backend ghi file vào /app/data/media và AI service không thấy
+    volumes:
+      - *media
     ports:
       - "${API_PORT:-5000}:8080"
-    volumes:
-      - media:/data/media
-
-  ai-service:
-    profiles: ["ai"]
-    build:
-      context: ./ai-service
-      dockerfile: Dockerfile
-    depends_on:
-      redis:
-        condition: service_started
-    environment:
-      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN}
-      MEDIA_ROOT: /data/media
-      STT_MODEL: large-v3-turbo
-      STT_DEVICE: auto
-      STT_BATCH: 8
-      STT_COMPUTE_TYPE: float16
-      MAX_AUDIO_SEC: 7260
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
-      GEMINI_MODEL: ${GEMINI_MODEL}
-      GEMINI_THINKING_LEVEL: ${GEMINI_THINKING_LEVEL}
-    volumes:
-      - media:/data/media
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  ai-service-cpu:
-    profiles: ["ai-cpu"]
-    build:
-      context: ./ai-service
-      dockerfile: Dockerfile
-      args:
-        BASE_IMAGE: ubuntu:24.04
-    depends_on:
-      redis:
-        condition: service_started
-    environment:
-      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN}
-      MEDIA_ROOT: /data/media
-      STT_MODEL: large-v3-turbo
-      STT_DEVICE: cpu
-      STT_BATCH: 0
-      STT_COMPUTE_TYPE: int8
-      MAX_AUDIO_SEC: 7260
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
-      GEMINI_MODEL: ${GEMINI_MODEL}
-      GEMINI_THINKING_LEVEL: ${GEMINI_THINKING_LEVEL}
-    volumes:
-      - media:/data/media
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
 
 volumes:
   pgdata:
-  media:
+  hf-cache:
+  media:                               # chỉ dùng khi MEDIA_SOURCE=media
