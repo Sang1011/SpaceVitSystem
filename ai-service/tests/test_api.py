@@ -20,7 +20,7 @@ class FakeEngine:
     def __init__(self, delay=0.0):
         self.delay = delay
 
-    def transcribe_file(self, path, lang, on_stage=None, on_segment=None, should_cancel=None):
+    def transcribe_file(self, path, lang, on_stage=None, on_segment=None, should_cancel=None, on_idle=None):
         on_stage("PREPROCESSING", {})
         on_stage("TRANSCRIBING", {"audio_sec": 100.0, "speech_sec": 60.0, "decoded_sec": 61.0})
         for s in SEGS:

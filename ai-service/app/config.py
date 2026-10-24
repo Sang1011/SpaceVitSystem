@@ -26,6 +26,8 @@ class Settings:
     gemini_api_key: str           # GEMINI_API_KEY (chỉ nằm ở service này, không bao giờ ra frontend)
     gemini_model: str             # GEMINI_MODEL
     gemini_thinking_level: str    # GEMINI_THINKING_LEVEL: rỗng = dùng mặc định của model
+    live_max_sessions: int = 2    # LIVE_MAX_SESSIONS: số phiên ghi âm trực tiếp đồng thời
+    live_gap_wait_sec: float = 30.0   # LIVE_GAP_WAIT_SEC: chờ chunk thiếu trước khi coi là khoảng trống
 
 
 def load_settings() -> Settings:
@@ -38,4 +40,6 @@ def load_settings() -> Settings:
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
         gemini_model=os.environ.get("GEMINI_MODEL", ""),
         gemini_thinking_level=os.environ.get("GEMINI_THINKING_LEVEL", "").upper(),
+        live_max_sessions=int(os.environ.get("LIVE_MAX_SESSIONS", 2)),
+        live_gap_wait_sec=float(os.environ.get("LIVE_GAP_WAIT_SEC", 30)),
     )

@@ -4,10 +4,9 @@ Trạng thái "nguồn sự thật" của job nằm ở backend (Postgres). Serv
 quả đã xong ra {MEDIA_ROOT}/results/ để sống sót khi restart. Job đang chạy/đang chờ mà service restart sẽ mất;
 backend thấy 404 khi polling thì submit lại (an toàn vì job_id do backend tạo, submit là idempotent).
 
-TODO(live-recording): luồng ghi âm trực tiếp dùng cùng hàng đợi này:
-- `Job.source` = "live" và `priority` = LIVE_PRIORITY (nhỏ hơn UPLOAD_PRIORITY) để chunk live chen lên trước job upload;
-- thêm khái niệm session (nhiều chunk -> một transcript) ở tầng trên, mỗi chunk là một job ngắn
-  gọi `engine.transcribe_chunk(...)` (chưa viết, xem docs/live-recording-todo.md).
+Luồng live (app/live.py) dùng CHUNG worker thread này: việc live luôn được ưu tiên, và chen vào giữa các lô decode
+của job upload đang chạy (hook `on_idle`), nên chỉ có một decode tại một thời điểm trên GPU. Phần tóm tắt Gemini
+chạy ở thread riêng để không chặn việc live.
 """
 from __future__ import annotations
 
@@ -18,6 +17,7 @@ import os
 import threading
 import time
 import traceback
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -29,7 +29,6 @@ log = logging.getLogger("ai.jobs")
 TERMINAL = frozenset({"COMPLETED", "PARTIAL_FAILED", "FAILED", "CANCELLED"})
 HAS_RESULT = frozenset({"COMPLETED", "PARTIAL_FAILED"})
 UPLOAD_PRIORITY = 10  # số nhỏ chạy trước
-LIVE_PRIORITY = 0     # TODO(live-recording): chưa dùng
 
 
 class JobError(ValueError):
@@ -60,7 +59,6 @@ class Job:
     output_language: str = "vi"
     media_key: Optional[str] = None
     input_segments: Optional[list] = None   # chỉ dùng cho resummarize
-    source: str = "upload"         # TODO(live-recording): "live"
     priority: int = UPLOAD_PRIORITY
     status: str = "QUEUED"
     progress: float = 0.0
@@ -114,7 +112,42 @@ class JobManager:
         self.engine_ready = False
         self.engine_error: Optional[str] = None
         self._stop = False
+        self._live: Any = None
+        self._next_engine_retry = 0.0
+        self._summary_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="summary")
         self._thread = threading.Thread(target=self._loop, name="ai-worker", daemon=True)
+
+    # ------------------------------------------------------------------ live
+
+    def attach_live(self, live: Any) -> None:
+        self._live = live
+
+    def submit_summary(self, segments: list, output_lang: str, duration: Optional[float]) -> Future:
+        return self._summary_pool.submit(self._summarizer.summarize, segments, output_lang, duration)
+
+    def wake(self) -> None:
+        with self._cv:
+            self._cv.notify_all()
+
+    def _engine_available(self) -> bool:
+        if self._engine is not None:
+            return True
+        if time.time() < self._next_engine_retry:  # nền: không thử nạp lại model liên tục
+            return False
+        ok = self._try_load_engine()
+        if not ok:
+            self._next_engine_retry = time.time() + 30
+        return ok
+
+    def _service_live(self, max_steps: int = 8) -> None:
+        """Chạy tối đa max_steps đơn vị việc live. Được gọi từ vòng chính và từ giữa các lô decode của job upload."""
+        if self._live is None or not self._engine_available():
+            return
+        for _ in range(max_steps):
+            self._live.tick()
+            if not self._live.has_work():
+                return
+            self._live.step(self._engine)
 
     # ------------------------------------------------------------------ vòng đời
 
@@ -130,6 +163,7 @@ class JobManager:
         with self._cv:
             self._stop = True
             self._cv.notify_all()
+        self._summary_pool.shutdown(wait=False, cancel_futures=True)
 
     def _purge_old_results(self) -> None:
         cutoff = time.time() - self._ttl_days * 86400
@@ -233,16 +267,30 @@ class JobManager:
     def _loop(self) -> None:
         self._try_load_engine()
         while True:
+            live_ready = False
             with self._cv:
-                while not self._pending and not self._stop:
-                    self._cv.wait()
                 if self._stop:
                     return
-                _, _, job_id = self._pending.pop(0)
-                job = self._jobs.get(job_id)
-                if job is None or job.status != "QUEUED":
-                    continue
-                self._running = job_id
+                live_ready = self._live is not None and self._live.has_work() and self._engine is not None
+                if not self._pending and not live_ready:
+                    self._cv.wait(timeout=0.5)  # thức định kỳ để các bộ đếm giờ của phiên live chạy
+                if self._stop:
+                    return
+            if self._live is not None:
+                self._live.tick()
+                if self._live.has_work() and self._engine_available():
+                    self._service_live()
+                    continue  # việc live luôn trước job upload
+            job = None
+            with self._cv:
+                if self._pending:
+                    _, _, job_id = self._pending.pop(0)
+                    job = self._jobs.get(job_id)
+                    if job is None or job.status != "QUEUED":
+                        continue
+                    self._running = job_id
+            if job is None:
+                continue
             try:
                 self._run(job)
             finally:
@@ -278,7 +326,7 @@ class JobManager:
                 self._set(job, status="ANALYZING", progress=stt_weight if job.mode == "summarize" else 0.0)
                 t = time.perf_counter()
                 try:
-                    job.summary = self._summarizer.summarize(job.segments, job.output_language, job.audio_sec)
+                    job.summary = self._await_summary(job)
                 except Exception as e:
                     log.exception("Tóm tắt thất bại (job %s)", job.job_id)
                     job.summary_error = f"{type(e).__name__}: {e}"[:500]
@@ -295,6 +343,15 @@ class JobManager:
         except Exception as e:
             log.error("Job %s lỗi:\n%s", job.job_id, traceback.format_exc())
             self._finish(job, "FAILED", f"{type(e).__name__}: {e}"[:500], "STT_FAILED")
+
+    def _await_summary(self, job: Job) -> dict:
+        """Chạy tóm tắt ở thread riêng; trong lúc chờ vẫn phục vụ việc live."""
+        fut = self.submit_summary(job.segments, job.output_language, job.audio_sec)
+        while True:
+            try:
+                return fut.result(timeout=0.25)
+            except FutureTimeout:
+                self._service_live()
 
     def _run_stt(self, job: Job, stt_weight: float) -> None:
         if self._engine is None and not self._try_load_engine():  # tự thử lại mỗi job, khỏi phải restart container
@@ -321,7 +378,7 @@ class JobManager:
 
         res = self._engine.transcribe_file(
             path, job.language, on_stage=on_stage, on_segment=on_segment,
-            should_cancel=lambda: job.cancel_requested,
+            should_cancel=lambda: job.cancel_requested, on_idle=self._service_live,
         )
         with self._lock:
             job.segments = res["segments"]  # danh sách cuối đã sắp theo thời gian

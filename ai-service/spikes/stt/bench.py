@@ -108,7 +108,7 @@ def main(model_key: str, lang: str, only: str | None = None) -> None:
             print("  stages: " + " | ".join(f"{k[:-4]} {v}s" for k, v in stages.items()) + ratio)
 
     out = RESULTS / f"{run_key}_{lang}.json"
-    if only and out.exists(): 
+    if only and out.exists():  # chạy 1 file thì giữ kết quả các file khác, không ghi đè cả JSON
         old = {r["file"]: r for r in json.loads(out.read_text(encoding="utf-8"))}
         old.update({r["file"]: r for r in rows})
         rows_to_save = [old[k] for k in sorted(old)]

@@ -3,8 +3,7 @@
 Chạy:  uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000 --workers 1
 `--workers 1` là bắt buộc: mỗi worker uvicorn sẽ nạp model riêng và tranh nhau GPU.
 
-TODO(live-recording): dự trữ tiền tố /v1/sessions cho ghi âm trực tiếp (tạo session, PUT chunk theo số thứ tự,
-lấy transcript từng phần, finalize). Xem docs/live-recording-todo.md. Không thêm vào /v1/jobs.
+Ghi âm trực tiếp: /v1/sessions (xem docs/live-recording.md). Upload: /v1/jobs.
 """
 from __future__ import annotations
 
@@ -18,6 +17,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from .config import Settings, load_settings
 from .jobs import HAS_RESULT, TERMINAL, Job, JobManager
+from .live import HAS_RESULT as LIVE_HAS_RESULT
+from .live import LiveConfig, LiveError, LiveManager
 from .summarize import GeminiSummarizer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -46,6 +47,26 @@ class CreateJob(BaseModel):
         elif not self.media_key:
             raise ValueError(f"{self.mode} cần media_key")
         return self
+
+
+SESSION_ID = r"^[A-Za-z0-9_-]{8,64}$"
+
+
+class CreateSession(BaseModel):
+    session_id: str = Field(pattern=SESSION_ID)
+    language: Literal["vi", "en"] = "vi"
+    output_language: Literal["vi", "en"] = "vi"
+    chunk_sec: float = Field(default=5.0, ge=0.5, le=30)  # độ dài chunk danh nghĩa, dùng khi một chunk bị thiếu
+
+
+class PutChunk(BaseModel):
+    media_key: str = Field(max_length=512)
+
+
+class FinalizeSession(BaseModel):
+    total_chunks: int = Field(ge=0, le=100000)
+    mode: Literal["transcribe", "summarize"] = "transcribe"
+    wait_missing_sec: float = Field(default=60, ge=0, le=600)
 
 
 def _status_body(job: Job, manager: JobManager) -> dict:
@@ -86,6 +107,13 @@ def create_app(
         yield
         manager.stop()
 
+    live = LiveManager(
+        settings.media_root,
+        LiveConfig(max_sessions=settings.live_max_sessions, gap_wait_sec=settings.live_gap_wait_sec),
+        manager.submit_summary,
+    )
+    manager.attach_live(live)
+
     app = FastAPI(title="SVS AI Service", version="1", lifespan=lifespan)
     token = settings.token.encode()
 
@@ -102,7 +130,7 @@ def create_app(
             "status": "ok" if manager.engine_ready else ("degraded" if manager.engine_error else "loading"),
             "model_loaded": manager.engine_ready, "load_error": manager.engine_error,
             "device": (manager._engine.config.get("device") if manager._engine else None),
-            **manager.stats(),
+            **manager.stats(), "live_sessions": live.active_count(),
         }
         if manager.engine_error:
             raise HTTPException(503, body)
@@ -155,5 +183,71 @@ def create_app(
         if action is None:
             raise HTTPException(404, "Không tìm thấy job")
         return {"job_id": job_id, "action": action}
+
+    # ------------------------------------------------------------------ ghi âm trực tiếp
+
+    @app.exception_handler(LiveError)
+    def _live_error(_, exc: LiveError):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": str(exc)}})
+
+    def _session(session_id: str):
+        s = live.get(session_id)
+        if s is None:
+            raise HTTPException(404, "Không tìm thấy phiên")
+        return s
+
+    @app.post("/v1/sessions", status_code=201, dependencies=[Depends(auth)])
+    def create_session(req: CreateSession):
+        s, _ = live.create(req.session_id, req.language, req.output_language, req.chunk_sec)  # idempotent
+        return s.view()
+
+    @app.put("/v1/sessions/{session_id}/chunks/{seq}", dependencies=[Depends(auth)])
+    def put_chunk(session_id: str, seq: int, req: PutChunk):
+        if seq < 0 or seq > 100000:
+            raise HTTPException(400, "seq không hợp lệ")
+        s = _session(session_id)
+        outcome = s.put_chunk(seq, req.media_key)
+        manager.wake()
+        return {**s.view(), "outcome": outcome}
+
+    @app.get("/v1/sessions/{session_id}", dependencies=[Depends(auth)])
+    def session_status(session_id: str):
+        return _session(session_id).view()
+
+    @app.get("/v1/sessions/{session_id}/segments", dependencies=[Depends(auth)])
+    def session_segments(session_id: str, after: int = Query(0, ge=0)):
+        """Transcript tăng dần theo thứ tự chốt. Chỉ số `index` tuyệt đối từ 0, dùng làm `after` lần sau."""
+        s = _session(session_id)
+        with s.lock:
+            chunk = s.segments[after:]
+            state = s.state
+        return {
+            "session_id": session_id, "state": state, "after": after, "next": after + len(chunk),
+            "segments": [{"index": after + i, **seg} for i, seg in enumerate(chunk)],
+        }
+
+    @app.post("/v1/sessions/{session_id}/finalize", status_code=202, dependencies=[Depends(auth)])
+    def finalize_session(session_id: str, req: FinalizeSession):
+        s = _session(session_id)
+        s.request_finalize(req.total_chunks, req.mode, req.wait_missing_sec)
+        manager.wake()
+        return s.view()
+
+    @app.get("/v1/sessions/{session_id}/result", dependencies=[Depends(auth)])
+    def session_result(session_id: str):
+        s = _session(session_id)
+        if s.state not in LIVE_HAS_RESULT:
+            raise HTTPException(409, {"state": s.state, "error": s.error})
+        return s.result()
+
+    @app.delete("/v1/sessions/{session_id}", dependencies=[Depends(auth)])
+    def delete_session(session_id: str):
+        """Đang ghi: hủy phiên. Đã kết thúc: xóa kết quả."""
+        action = live.delete(session_id)
+        if action is None:
+            raise HTTPException(404, "Không tìm thấy phiên")
+        return {"session_id": session_id, "action": action}
 
     return app

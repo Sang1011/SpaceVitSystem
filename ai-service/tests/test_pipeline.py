@@ -68,3 +68,14 @@ def test_cancel_between_segments(engine):
 
 def test_cpu_threads_not_left_at_library_default(engine):
     assert engine.config["cpu_threads"] >= 1 and engine.calls["model_kwargs"]["cpu_threads"] == engine.config["cpu_threads"]
+
+
+def test_live_core_works_even_when_file_path_is_sequential(engine, monkeypatch):
+    """STT_BATCH=0 chỉ đổi đường xử lý FILE; transcribe_windows (dùng cho live) vẫn chạy, với batch_size tối thiểu 1."""
+    import faster_whisper
+    monkeypatch.setenv("STT_BATCH", "0")
+    e = P.FasterWhisperEngine("fake")
+    e.calls = engine.calls
+    assert e._pipeline is None
+    raw = e.transcribe_windows(np.zeros(40 * SR, dtype="float32"), [{"start": 0, "end": 10}], "vi")
+    assert [r[2] for r in raw] == ["hai", "một"] and engine.calls["kw"]["batch_size"] == 1

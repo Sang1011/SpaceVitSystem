@@ -8,9 +8,8 @@ Cấu trúc 3 lớp, để luồng Live Recording sau này chỉ cần thêm nơ
 2. `transcribe_file()` là lớp mỏng: giải mã file -> lõi -> merge, có hook tiến độ và hủy job.
 3. `load_faster_whisper()` giữ nguyên giao diện cũ `transcribe(path, lang) -> dict` cho bench.py.
 
-TODO(live-recording): xem docs/live-recording-todo.md. Việc cần làm ở đây khi triển khai live:
-- thêm `transcribe_chunk(audio, lang, offset_sec, ...)` gọi `detect_windows` + `transcribe_windows`;
-- quyết định VAD có mang ngữ cảnh qua ranh giới chunk hay không (xem tài liệu).
+Luồng live (app/live.py) dùng lại đúng `detect_speech(live=True)` và `transcribe_windows(..., offset_sec)`;
+xem docs/live-recording.md.
 """
 from __future__ import annotations
 
@@ -121,11 +120,23 @@ class FasterWhisperEngine:
             speech_pad_ms=env_int("STT_VAD_PAD_MS", 500),  # đệm đầu/cuối câu
             max_speech_duration_s=28,  # + pad 2 đầu vẫn < MAX_WINDOW_SEC
         )
+        # VAD cho live: đóng đoạn sau im lặng đủ dài, cắt đoạn nói liền tối đa LIVE_MAX_UTTERANCE_SEC, bỏ tiếng động rất ngắn
+        self.live_commit_silence_sec = env_int("LIVE_COMMIT_SILENCE_MS", 700) / 1000
+        self.live_pad_sec = env_int("STT_VAD_PAD_MS", 500) / 1000
+        self.live_vad_opts = VadOptions(
+            threshold=env_float("STT_VAD_THRESHOLD", 0.4),
+            min_silence_duration_ms=int(self.live_commit_silence_sec * 1000),
+            min_speech_duration_ms=env_int("LIVE_MIN_SPEECH_MS", 250),
+            speech_pad_ms=env_int("STT_VAD_PAD_MS", 500),
+            max_speech_duration_s=env_float("LIVE_MAX_UTTERANCE_SEC", 25),
+        )
         self._get_speech_timestamps = get_speech_timestamps
 
         t0 = time.perf_counter()
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type, cpu_threads=cpu_threads)
-        self._pipeline = BatchedInferencePipeline(self.model) if self.batch > 0 else None
+        # Live luôn cần pipeline batched, kể cả khi STT_BATCH=0 (STT_BATCH=0 chỉ chọn đường tuần tự cũ cho FILE)
+        self._batched = BatchedInferencePipeline(self.model)
+        self._pipeline = self._batched if self.batch > 0 else None
         self.config = {
             "model": model_name, "compute_type": compute_type, "cpu_threads": cpu_threads,
             "beam": self.beam, "batch": self.batch, "vad": self.use_vad,
@@ -137,11 +148,15 @@ class FasterWhisperEngine:
 
     # ------------------------------------------------------------------ lõi (mảng audio)
 
+    def detect_speech(self, audio, live: bool = False) -> list[dict]:
+        """Các đoạn có lời nói thô từ Silero, đơn vị MẪU ({"start","end"}), đã gồm đệm đầu/cuối."""
+        return self._get_speech_timestamps(audio, self.live_vad_opts if live else self.vad_opts)
+
     def detect_windows(self, audio) -> tuple[list[dict], float]:
         """VAD -> các cửa sổ <= MAX_WINDOW_SEC (giây, theo timeline của `audio`). Trả (windows, speech_sec)."""
         audio_sec = len(audio) / SAMPLE_RATE
         if self.use_vad:
-            speech = self._get_speech_timestamps(audio, self.vad_opts)
+            speech = self.detect_speech(audio)
             speech_sec = sum(s["end"] - s["start"] for s in speech) / SAMPLE_RATE
             return build_windows(speech), speech_sec
         # đối chứng: không VAD, cắt cố định, dùng để kiểm tra VAD có làm mất chữ không
@@ -151,23 +166,26 @@ class FasterWhisperEngine:
     def transcribe_windows(
         self, audio, windows: list[dict], lang: str, offset_sec: float = 0.0,
         on_segment: Optional[OnSegment] = None, should_cancel: Optional[ShouldCancel] = None,
+        on_idle: Optional[Callable[[], None]] = None,
     ) -> list[tuple[float, float, str]]:
         """STT theo batch trên các cửa sổ. Timestamp trả về = timeline của `audio` + `offset_sec`.
 
         Segment được phát dần qua `on_segment` (theo từng lô cửa sổ) nên có thể xem transcript từng phần.
+        `on_idle` được gọi giữa các segment (tức giữa các lô decode): AI service dùng nó để chen việc live vào
+        trước job upload đang chạy dài, trong cùng một luồng nên không có hai decode song song trên một model.
         """
-        if self._pipeline is None:
-            raise RuntimeError("transcribe_windows cần STT_BATCH > 0")
         raw: list[tuple[float, float, str]] = []
         if not windows:
             return raw
-        segs, _ = self._pipeline.transcribe(
-            audio, language=lang, beam_size=self.beam, batch_size=self.batch,
+        segs, _ = self._batched.transcribe(
+            audio, language=lang, beam_size=self.beam, batch_size=max(self.batch, 1),
             clip_timestamps=windows, without_timestamps=False, vad_filter=False,
         )
         for s in segs:
             if should_cancel and should_cancel():
                 raise JobCancelled()
+            if on_idle:
+                on_idle()
             text = s.text.strip()
             if not text:
                 continue
@@ -182,6 +200,7 @@ class FasterWhisperEngine:
     def transcribe_file(
         self, path: Path, lang: str, on_stage: Optional[OnStage] = None,
         on_segment: Optional[OnSegment] = None, should_cancel: Optional[ShouldCancel] = None,
+        on_idle: Optional[Callable[[], None]] = None,
     ) -> dict:
         from faster_whisper import decode_audio
 
@@ -208,7 +227,7 @@ class FasterWhisperEngine:
 
             # Stage 3: STT theo batch; timestamp trả về đã theo timeline gốc
             t = time.perf_counter()
-            raw = self.transcribe_windows(audio, windows, lang, 0.0, on_segment, should_cancel)
+            raw = self.transcribe_windows(audio, windows, lang, 0.0, on_segment, should_cancel, on_idle)
             stages["stt_sec"] = time.perf_counter() - t
         else:
             # Đường cũ (tuần tự): VAD chạy bên trong transcribe nên nằm trong stt_sec
