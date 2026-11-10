@@ -13,6 +13,8 @@ public class SvsDbContext(DbContextOptions<SvsDbContext> options)
     public DbSet<Recording> Recordings => Set<Recording>();
     public DbSet<TranscriptionJob> TranscriptionJobs => Set<TranscriptionJob>();
     public DbSet<TranscriptSegment> TranscriptSegments => Set<TranscriptSegment>();
+    public DbSet<SpaceInvitation> SpaceInvitations => Set<SpaceInvitation>();
+    public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<LiveSession> LiveSessions => Set<LiveSession>();
     public DbSet<RecordingChunk> RecordingChunks => Set<RecordingChunk>();
 
@@ -46,6 +48,7 @@ public class SvsDbContext(DbContextOptions<SvsDbContext> options)
             e.Property(x => x.Source).HasConversion<string>().HasMaxLength(20);
             e.HasOne(x => x.Space).WithMany().HasForeignKey(x => x.SpaceId);
             e.HasIndex(x => x.SpaceId);
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.UploadedByUserId).OnDelete(DeleteBehavior.SetNull);
         });
 
         b.Entity<TranscriptionJob>(e =>
@@ -81,6 +84,7 @@ public class SvsDbContext(DbContextOptions<SvsDbContext> options)
             e.Property(x => x.ErrorCode).HasMaxLength(50);
             e.Property(x => x.GapsJson).HasColumnType("jsonb");
             e.HasOne(x => x.Recording).WithMany().HasForeignKey(x => x.RecordingId);
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.SetNull);
             e.HasIndex(x => x.RecordingId).IsUnique();
             e.HasIndex(x => x.Status); // poller quét các phiên đang hoạt động
         });
@@ -90,6 +94,26 @@ public class SvsDbContext(DbContextOptions<SvsDbContext> options)
             e.Property(x => x.MediaKey).HasMaxLength(512).IsRequired();
             e.HasOne(x => x.LiveSession).WithMany(s => s.Chunks).HasForeignKey(x => x.LiveSessionId);
             e.HasIndex(x => new { x.LiveSessionId, x.Seq }).IsUnique(); // chặn nhận trùng seq khi hai request chạy đua
+        });
+
+        b.Entity<RefreshToken>(e =>
+        {
+            e.Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
+            e.HasIndex(x => x.TokenHash).IsUnique();
+            e.HasIndex(x => x.FamilyId);
+            // Hai request cùng làm mới một token chạy đua: chỉ một bên ghi được RevokedAt, bên kia gặp xung đột.
+            e.Property(x => x.RevokedAt).IsConcurrencyToken();
+            e.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        b.Entity<SpaceInvitation>(e =>
+        {
+            e.Property(x => x.Email).HasMaxLength(256).IsRequired();
+            e.Property(x => x.Role).HasConversion<string>().HasMaxLength(20);
+            e.Property(x => x.CodeHash).HasMaxLength(64).IsRequired();
+            e.HasIndex(x => x.CodeHash).IsUnique();
+            e.HasIndex(x => new { x.SpaceId, x.Email });
+            e.HasOne(x => x.Space).WithMany().HasForeignKey(x => x.SpaceId).OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

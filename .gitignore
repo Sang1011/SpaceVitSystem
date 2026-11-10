@@ -483,3 +483,6 @@ $RECYCLE.BIN/
 ".env" 
 .venv/
 .env
+
+docs/
+frontend-reference/

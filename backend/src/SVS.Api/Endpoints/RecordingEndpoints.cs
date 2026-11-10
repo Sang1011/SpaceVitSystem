@@ -7,6 +7,7 @@ using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
 using SVS.Application.Common.Exceptions;
 using SVS.Application.Common.Interfaces;
+using SVS.Application.Spaces;
 using SVS.Application.Transcription;
 using SVS.Domain.Entities;
 using SVS.Infrastructure.Media;
@@ -31,8 +32,7 @@ public static class RecordingEndpoints
 
     public static IEndpointRouteBuilder MapRecordingEndpoints(this IEndpointRouteBuilder app)
     {
-        // TODO(auth): chưa có đăng nhập, các endpoint này đang MỞ. Khi có auth: yêu cầu đăng nhập và kiểm tra người dùng
-        // là thành viên của Space (Editor trở lên được upload, Viewer chỉ xem).
+        // Mọi endpoint yêu cầu đăng nhập (fallback policy). Quyền theo Space: Editor trở lên được upload/tóm tắt/hủy, Viewer chỉ xem.
         var api = app.MapGroup("/api").WithTags("Recordings");
 
         api.MapPost("/spaces/{spaceId:guid}/recordings", Upload);
@@ -53,8 +53,11 @@ public static class RecordingEndpoints
     /// </summary>
     private static async Task<IResult> Upload(
         Guid spaceId, HttpRequest request, IApplicationDbContext db, IMediaStorage storage,
-        TranscriptionJobCoordinator coordinator, IOptions<MediaOptions> mediaOptions, CancellationToken ct)
+        TranscriptionJobCoordinator coordinator, IOptions<MediaOptions> mediaOptions,
+        SpaceAccessService access, ICurrentUser currentUser, CancellationToken ct)
     {
+        await access.RequireAsync(spaceId, SpaceRole.Editor, ct); // trước khi đọc thân request
+        var uploaderId = currentUser.RequireUserId();
         var maxBytes = mediaOptions.Value.MaxUploadBytes;
 
         var modeText = request.Query["mode"].ToString().ToLowerInvariant();
@@ -69,9 +72,6 @@ public static class RecordingEndpoints
         var outputLanguage = Normalize(request.Query["outputLanguage"].ToString());
         if (language is null || outputLanguage is null)
             return Results.BadRequest(new { error = "language/outputLanguage phải là vi hoặc en" });
-
-        if (!await db.Spaces.AnyAsync(s => s.Id == spaceId && !s.IsArchived, ct))
-            return Results.NotFound(new { error = "Không tìm thấy Space" });
 
         if (!MediaTypeHeaderValue.TryParse(request.ContentType, out var mediaType)
             || !mediaType.MediaType.Equals("multipart/form-data", StringComparison.OrdinalIgnoreCase)
@@ -120,6 +120,7 @@ public static class RecordingEndpoints
             MediaKey = stored.MediaKey,
             SizeBytes = stored.SizeBytes,
             Language = language,
+            UploadedByUserId = uploaderId,
         };
         db.Recordings.Add(recording);
         try
@@ -143,8 +144,9 @@ public static class RecordingEndpoints
         }
     }
 
-    private static async Task<IResult> GetRecording(Guid id, IApplicationDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetRecording(Guid id, IApplicationDbContext db, SpaceAccessService access, CancellationToken ct)
     {
+        await access.RequireRecordingAsync(id, SpaceRole.Viewer, ct);
         var r = await db.Recordings.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (r is null) return Results.NotFound();
         var job = await db.TranscriptionJobs.AsNoTracking().Where(j => j.RecordingId == id)
@@ -156,9 +158,9 @@ public static class RecordingEndpoints
     }
 
     /// <summary>Hỗ trợ xem từng phần: gọi lại với after = next của lần trước.</summary>
-    private static async Task<IResult> GetTranscript(Guid id, int? after, IApplicationDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetTranscript(Guid id, int? after, IApplicationDbContext db, SpaceAccessService access, CancellationToken ct)
     {
-        if (!await db.Recordings.AnyAsync(r => r.Id == id, ct)) return Results.NotFound();
+        await access.RequireRecordingAsync(id, SpaceRole.Viewer, ct);
         var from = Math.Max(0, after ?? 0);
         var items = await db.TranscriptSegments.AsNoTracking()
             .Where(s => s.RecordingId == id && s.Index >= from).OrderBy(s => s.Index).Take(5000)
@@ -166,8 +168,9 @@ public static class RecordingEndpoints
         return Results.Ok(new TranscriptDto(from, items.Count == 0 ? from : items[^1].Index + 1, items));
     }
 
-    private static async Task<IResult> GetSummary(Guid id, IApplicationDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetSummary(Guid id, IApplicationDbContext db, SpaceAccessService access, CancellationToken ct)
     {
+        await access.RequireRecordingAsync(id, SpaceRole.Viewer, ct);
         var json = await db.TranscriptionJobs.AsNoTracking()
             .Where(j => j.RecordingId == id && j.SummaryJson != null)
             .OrderByDescending(j => j.CreatedAt).Select(j => j.SummaryJson).FirstOrDefaultAsync(ct);
@@ -176,8 +179,9 @@ public static class RecordingEndpoints
 
     /// <summary>Tóm tắt (lại) từ transcript đã có, không chạy lại STT. Dùng khi tóm tắt lỗi hoặc muốn tóm tắt sau.</summary>
     private static async Task<IResult> Summarize(
-        Guid id, TranscriptionJobCoordinator coordinator, CancellationToken ct, string? outputLanguage = null)
+        Guid id, TranscriptionJobCoordinator coordinator, SpaceAccessService access, CancellationToken ct, string? outputLanguage = null)
     {
+        await access.RequireRecordingAsync(id, SpaceRole.Editor, ct);
         var lang = Normalize(outputLanguage ?? string.Empty);
         if (lang is null) return Results.BadRequest(new { error = "outputLanguage phải là vi hoặc en" });
         try
@@ -189,14 +193,16 @@ public static class RecordingEndpoints
         catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
     }
 
-    private static async Task<IResult> GetJob(Guid id, IApplicationDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetJob(Guid id, IApplicationDbContext db, SpaceAccessService access, CancellationToken ct)
     {
+        await access.RequireJobAsync(id, SpaceRole.Viewer, ct);
         var job = await db.TranscriptionJobs.AsNoTracking().FirstOrDefaultAsync(j => j.Id == id, ct);
         return job is null ? Results.NotFound() : Results.Ok(ToDto(job));
     }
 
-    private static async Task<IResult> CancelJob(Guid id, TranscriptionJobCoordinator coordinator, IApplicationDbContext db, CancellationToken ct)
+    private static async Task<IResult> CancelJob(Guid id, TranscriptionJobCoordinator coordinator, IApplicationDbContext db, SpaceAccessService access, CancellationToken ct)
     {
+        await access.RequireJobAsync(id, SpaceRole.Editor, ct);
         if (!await coordinator.CancelAsync(id, ct)) return Results.NotFound();
         var job = await db.TranscriptionJobs.AsNoTracking().FirstAsync(j => j.Id == id, ct);
         return Results.Ok(ToDto(job));

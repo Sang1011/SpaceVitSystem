@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -25,17 +25,50 @@ STATE = {"Completed": "Completed", "PARTIAL_FAILED": "PartialFailed", "COMPLETED
          "FINALIZING": "Finalizing", "ANALYZING": "Analyzing", "FAILED": "Failed", "CANCELLED": "Cancelled"}
 
 
-def fake_backend(media: Path, ai: TestClient) -> FastAPI:
+def fake_backend(media: Path, ai: TestClient, expire_after: int | None = None) -> FastAPI:
+    """Backend giả có xác thực: token "tok-1" hết hạn sau `expire_after` lời gọi, phải dùng refresh để lấy "tok-2"."""
     app, sessions = FastAPI(), {}
+    state = {"calls": 0, "token": "tok-1", "refreshed": 0}
 
-    @app.post("/api/spaces/{space}/live-sessions")
+    def authed(request: Request):
+        state["calls"] += 1
+        if expire_after is not None and state["token"] == "tok-1" and state["calls"] > expire_after:
+            state["token"] = "expired"  # tok-1 chết, chỉ tok-2 hợp lệ
+        valid = {"tok-1"} if state["token"] == "tok-1" else {"tok-2"}
+        if request.headers.get("authorization") not in {f"Bearer {t}" for t in valid}:
+            raise HTTPException(401, "unauthorized")
+
+    app.state.fake = state
+
+    @app.post("/api/auth/login")
+    def login(body: dict):
+        if body.get("password") != "12345678":
+            raise HTTPException(401, "bad")
+        return {"accessToken": "tok-1", "refreshToken": "ref-1", "user": {}}
+
+    @app.post("/api/auth/register")
+    def register(body: dict):
+        return {"accessToken": "tok-1", "refreshToken": "ref-1", "user": {}}
+
+    @app.post("/api/auth/refresh")
+    def refresh(body: dict):
+        if body.get("refreshToken") != "ref-1":
+            raise HTTPException(401, "bad refresh")
+        state["token"], state["refreshed"] = "tok-2", state["refreshed"] + 1
+        return {"accessToken": "tok-2", "refreshToken": "ref-2", "user": {}}
+
+    @app.post("/api/spaces", dependencies=[Depends(authed)], status_code=201)
+    def create_space(body: dict):
+        return {"id": "space-created", "name": body["name"]}
+
+    @app.post("/api/spaces/{space}/live-sessions", dependencies=[Depends(authed)])
     def start(space: str, body: dict):
         sid, rid = uuid.uuid4().hex, uuid.uuid4().hex
         ai.post("/v1/sessions", json={"session_id": sid, "language": body.get("language", "vi"), "chunk_sec": body.get("chunkSec", 5)}, headers=H)
         sessions[sid] = rid
         return {"session": {"id": sid, "recordingId": rid}, "protocol": {}}
 
-    @app.put("/api/live-sessions/{sid}/chunks/{seq}")
+    @app.put("/api/live-sessions/{sid}/chunks/{seq}", dependencies=[Depends(authed)])
     async def chunk(sid: str, seq: int, request: Request):
         key = f"live/{sessions[sid]}/chunks/{seq:08d}.pcm"
         p = media / key
@@ -44,17 +77,17 @@ def fake_backend(media: Path, ai: TestClient) -> FastAPI:
         r = ai.put(f"/v1/sessions/{sid}/chunks/{seq}", json={"media_key": key}, headers=H)
         return {"seq": seq, "outcome": r.json().get("outcome")}
 
-    @app.post("/api/live-sessions/{sid}/stop")
+    @app.post("/api/live-sessions/{sid}/stop", dependencies=[Depends(authed)])
     def stop(sid: str, body: dict):
         ai.post(f"/v1/sessions/{sid}/finalize", json={"total_chunks": body["totalChunks"], "mode": body["mode"], "wait_missing_sec": 0.3}, headers=H)
         return {}
 
-    @app.get("/api/live-sessions/{sid}")
+    @app.get("/api/live-sessions/{sid}", dependencies=[Depends(authed)])
     def get(sid: str):
         v = ai.get(f"/v1/sessions/{sid}", headers=H).json()
         return {"status": STATE[v["state"]], "receivedChunks": v["received"], "missingSeqs": v["missing_seqs"], "gaps": v["gaps"]}
 
-    @app.get("/api/recordings/{rid}/transcript")
+    @app.get("/api/recordings/{rid}/transcript", dependencies=[Depends(authed)])
     def transcript(rid: str, after: int = 0):
         sid = next(s for s, r in sessions.items() if r == rid)
         v = ai.get(f"/v1/sessions/{sid}", headers=H).json()
@@ -66,7 +99,7 @@ def fake_backend(media: Path, ai: TestClient) -> FastAPI:
         return {"after": after, "next": after + len(segs), "segments": [
             {"index": s["index"], "startSec": s["start"], "endSec": s["end"], "text": s["text"]} for s in segs]}
 
-    @app.get("/api/recordings/{rid}/summary")
+    @app.get("/api/recordings/{rid}/summary", dependencies=[Depends(authed)])
     def summary(rid: str):
         sid = next(s for s, r in sessions.items() if r == rid)
         return ai.get(f"/v1/sessions/{sid}/result", headers=H).json()["summary"] or {}
@@ -75,14 +108,15 @@ def fake_backend(media: Path, ai: TestClient) -> FastAPI:
 
 
 @pytest.fixture
-def stack(tmp_path):
+def stack(tmp_path, request):
+    expire = getattr(request, "param", None)
     s = Settings("secret", tmp_path, "m", 7260, 7, "", "", "", 2, 30.0)
     ai = TestClient(create_app(s, lambda: FakeLiveEngine(), Summ(), probe_duration=lambda p: 1.0))
     ai.__enter__()
     with socket.socket() as so:
         so.bind(("127.0.0.1", 0))
         port = so.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(fake_backend(tmp_path, ai), host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(fake_backend(tmp_path, ai, expire), host="127.0.0.1", port=port, log_level="warning"))
     t = threading.Thread(target=server.run, daemon=True)
     t.start()
     while not server.started:
@@ -106,7 +140,8 @@ def write_wav(path: Path) -> Path:
 
 
 def args(api, audio, **kw):
-    a = live_simulator.parser().parse_args([str(audio), "--api", api, "--space", "sp", "--speed", "25", "--poll", "0.05"])
+    a = live_simulator.parser().parse_args([str(audio), "--api", api, "--space", "sp", "--email", "a@b.com", "--password", "12345678",
+                                            "--speed", "25", "--poll", "0.05"])
     for k, v in kw.items():
         setattr(a, k, v)
     return a
@@ -131,3 +166,28 @@ def test_simulator_dropped_chunk_becomes_gap_and_pause_shortens_timeline(stack):
     assert res["status"] == "Completed" and [g["seq"] for g in res["session"]["gaps"]] == [1]
     res2 = live_simulator.run(args(api, audio, pause_at="10:5"), out=lambda *_: None)
     assert res2["status"] == "Completed" and res2["errors"] == []
+
+
+def test_simulator_creates_space_when_not_given_and_registers(stack):
+    api, tmp = stack
+    audio = write_wav(tmp / "a.wav")
+    a = args(api, audio, space="", password="12345678", register=True)
+    res = live_simulator.run(a, out=lambda *_: None)
+    assert res["status"] == "Completed" and res["errors"] == []
+
+
+def test_simulator_wrong_password_exits_with_clear_message(stack):
+    api, tmp = stack
+    audio = write_wav(tmp / "a.wav")
+    with pytest.raises(SystemExit) as e:
+        live_simulator.run(args(api, audio, password="sai-mat-khau"), out=lambda *_: None)
+    assert "Đăng nhập thất bại" in str(e.value)
+
+
+@pytest.mark.parametrize("stack", [8], indirect=True)
+def test_simulator_refreshes_token_when_it_expires_mid_session(stack):
+    api, tmp = stack
+    audio = write_wav(tmp / "a.wav")
+    res = live_simulator.run(args(api, audio), out=lambda *_: None)
+    assert res["status"] == "Completed" and res["errors"] == []
+    assert res["refreshes"] == 1  # chỉ một lần làm mới dù nhiều luồng cùng bị 401

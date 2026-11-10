@@ -38,11 +38,14 @@ public sealed class LiveSessionCoordinator(
 
     /// <exception cref="LiveSessionException">429 khi hệ thống đã đủ phiên đồng thời, 503 khi AI service không sẵn sàng.</exception>
     public async Task<LiveSession> CreateAsync(
-        Guid spaceId, string language, string outputLanguage, double? chunkSec, CancellationToken ct)
+        Guid spaceId, string language, string outputLanguage, double? chunkSec, Guid? createdByUserId, CancellationToken ct)
     {
         var session = new LiveSession
         {
-            Language = language, OutputLanguage = outputLanguage, ChunkSec = chunkSec ?? Opt.DefaultChunkSec,
+            Language = language,
+            OutputLanguage = outputLanguage,
+            ChunkSec = chunkSec ?? Opt.DefaultChunkSec,
+            CreatedByUserId = createdByUserId,
         };
         try
         {
@@ -61,7 +64,10 @@ public sealed class LiveSessionCoordinator(
 
         var recording = new Recording
         {
-            SpaceId = spaceId, Language = language, Source = RecordingSource.Live,
+            SpaceId = spaceId,
+            Language = language,
+            Source = RecordingSource.Live,
+            UploadedByUserId = createdByUserId,
             FileName = $"live-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}",
         };
         session.RecordingId = recording.Id;
@@ -386,7 +392,11 @@ public sealed class LiveSessionCoordinator(
         foreach (var seg in page.Segments)
             db.TranscriptSegments.Add(new TranscriptSegment
             {
-                RecordingId = s.RecordingId, Index = seg.Index, StartSec = seg.Start, EndSec = seg.End, Text = seg.Text,
+                RecordingId = s.RecordingId,
+                Index = seg.Index,
+                StartSec = seg.Start,
+                EndSec = seg.End,
+                Text = seg.Text,
             });
         s.SegmentsSynced = page.Next;
     }
@@ -403,7 +413,11 @@ public sealed class LiveSessionCoordinator(
         foreach (var seg in result.Segments)
             db.TranscriptSegments.Add(new TranscriptSegment
             {
-                RecordingId = s.RecordingId, Index = i++, StartSec = seg.Start, EndSec = seg.End, Text = seg.Text,
+                RecordingId = s.RecordingId,
+                Index = i++,
+                StartSec = seg.Start,
+                EndSec = seg.End,
+                Text = seg.Text,
             });
         s.SegmentsSynced = result.Segments.Count;
 
@@ -416,8 +430,12 @@ public sealed class LiveSessionCoordinator(
             RecordingId = s.RecordingId,
             Mode = s.StopMode ?? TranscriptionMode.Transcribe,
             Status = status == LiveSessionStatus.Completed ? TranscriptionJobStatus.Completed : TranscriptionJobStatus.PartialFailed,
-            Progress = 1.0, OutputLanguage = s.OutputLanguage, SubmittedAt = s.StartedAt, StartedAt = s.StartedAt,
-            CompletedAt = DateTimeOffset.UtcNow, SegmentsSynced = result.Segments.Count,
+            Progress = 1.0,
+            OutputLanguage = s.OutputLanguage,
+            SubmittedAt = s.StartedAt,
+            StartedAt = s.StartedAt,
+            CompletedAt = DateTimeOffset.UtcNow,
+            SegmentsSynced = result.Segments.Count,
             SummaryJson = result.Summary is { ValueKind: not JsonValueKind.Null } sm ? sm.GetRawText() : null,
             SummaryError = result.SummaryError,
             StageTimingsJson = result.Stages is { ValueKind: not JsonValueKind.Null } st ? st.GetRawText() : null,

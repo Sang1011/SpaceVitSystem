@@ -2,9 +2,11 @@
 
 Dùng để kiểm thử đầu-cuối và đo độ trễ khi chưa có giao diện ghi âm (hoặc khi muốn lặp lại cùng một kịch bản).
 
-Ví dụ:
-  python scripts/live_simulator.py meeting.mp4 --api http://localhost:5211 --space <spaceId> --mode summarize
-  python scripts/live_simulator.py meeting.mp4 --speed 4 --shuffle 3 --drop 4 --dup 2 --pause-at 30:10
+Ví dụ (backend yêu cầu đăng nhập: dùng --email/--password, thêm --register nếu chưa có tài khoản, hoặc --token):
+  python scripts/live_simulator.py meeting.mp4 --api http://localhost:5000 --email a@b.com --password 12345678 --register --mode summarize
+  python scripts/live_simulator.py meeting.mp4 --api http://localhost:5000 --email a@b.com --password 12345678 --space <spaceId>
+  python scripts/live_simulator.py meeting.mp4 --token <accessToken> --space <spaceId> --speed 4 --shuffle 3 --drop 4 --dup 2 --pause-at 30:10
+Không truyền --space thì tự tạo một phòng mới (người dùng trở thành Owner).
 
 Độ trễ in ra = (thời gian thực đã trôi qua quy ra thời gian audio) - (mốc kết thúc segment): segment càng "trễ"
 thì người dùng thấy chữ càng muộn so với lúc họ nói. Với chunk 5 giây, kỳ vọng vài giây đầu mỗi câu.
@@ -23,6 +25,49 @@ import numpy as np
 
 SR = 16000
 TERMINAL = {"Completed", "PartialFailed", "Failed", "Cancelled"}
+
+
+class AuthClient(httpx.Client):
+    """httpx.Client tự làm mới access token khi nhận 401 (access token chỉ sống 15 phút, phiên dài có thể vượt)."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.refresh_token: str | None = None
+        self.refreshes = 0
+        self._lock = threading.Lock()
+
+    def request(self, method, url, **kw):
+        before = self.headers.get("Authorization")
+        resp = super().request(method, url, **kw)
+        if resp.status_code == 401 and self.refresh_token and not str(url).startswith("/api/auth/"):
+            with self._lock:  # nhiều luồng cùng bị 401: chỉ một luồng làm mới, các luồng còn lại dùng token mới
+                if self.headers.get("Authorization") == before:
+                    self._refresh()
+            resp = super().request(method, url, **kw)
+        return resp
+
+    def _refresh(self) -> None:
+        r = super().request("POST", "/api/auth/refresh", json={"refreshToken": self.refresh_token})
+        if r.status_code == 200:
+            d = r.json()
+            self.headers["Authorization"] = f"Bearer {d['accessToken']}"
+            self.refresh_token = d["refreshToken"]
+            self.refreshes += 1
+
+    def sign_in(self, args) -> None:
+        if args.token:
+            self.headers["Authorization"] = f"Bearer {args.token}"
+            return
+        if not (args.email and args.password):
+            raise SystemExit("Backend yêu cầu đăng nhập: truyền --email và --password (hoặc --token)")
+        r = super().request("POST", "/api/auth/login", json={"email": args.email, "password": args.password})
+        if r.status_code == 401 and args.register:
+            r = super().request("POST", "/api/auth/register", json={"email": args.email, "password": args.password, "displayName": args.email.split("@")[0]})
+        if r.status_code >= 400:
+            raise SystemExit(f"Đăng nhập thất bại: HTTP {r.status_code} {r.text[:200]}")
+        d = r.json()
+        self.headers["Authorization"] = f"Bearer {d['accessToken']}"
+        self.refresh_token = d["refreshToken"]
 
 
 def load_pcm(path: Path) -> np.ndarray:
@@ -52,9 +97,17 @@ def run(args: argparse.Namespace, out=print) -> dict:
     drop, dup = parse_ints(args.drop), parse_ints(args.dup)
     out(f"[audio] {len(audio) / SR:.1f}s -> {total} chunk x {args.chunk_sec}s; speed x{args.speed}")
 
-    http = httpx.Client(base_url=args.api.rstrip("/"), timeout=60)
-    r = http.post(f"/api/spaces/{args.space}/live-sessions", json={"language": args.language, "chunkSec": args.chunk_sec})
-    r.raise_for_status()
+    http = AuthClient(base_url=args.api.rstrip("/"), timeout=60)
+    http.sign_in(args)
+    space = args.space
+    if not space:
+        c = http.post("/api/spaces", json={"name": f"Simulator {time.strftime('%H:%M:%S')}"})
+        c.raise_for_status()
+        space = c.json()["id"]
+        out(f"[space] đã tạo phòng {space}")
+    r = http.post(f"/api/spaces/{space}/live-sessions", json={"language": args.language, "chunkSec": args.chunk_sec})
+    if r.status_code >= 400:
+        raise SystemExit(f"Không tạo được phiên: HTTP {r.status_code} {r.text[:200]}")
     sid, rid = r.json()["session"]["id"], r.json()["session"]["recordingId"]
     out(f"[session] {sid} recording {rid}")
 
@@ -137,7 +190,7 @@ def run(args: argparse.Namespace, out=print) -> dict:
         out(f"tóm tắt: {summary.get('title')!r} ({summary.get('content_type')})")
     for e in errors:
         out(f"[LỖI] {e}")
-    return {"status": final_session.get("status"), "segments": final, "latencies": latencies, "summary": summary,
+    return {"status": final_session.get("status"), "refreshes": http.refreshes, "segments": final, "latencies": latencies, "summary": summary,
             "errors": errors, "session": final_session, "sent": sent_log}
 
 
@@ -145,7 +198,11 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("audio")
     p.add_argument("--api", default="http://localhost:5211", help="URL backend")
-    p.add_argument("--space", required=True, help="Id của Space (phải tồn tại trong DB)")
+    p.add_argument("--space", default="", help="Id của Space (bạn phải là Editor trở lên); bỏ trống để tự tạo phòng mới")
+    p.add_argument("--email", default="", help="email đăng nhập")
+    p.add_argument("--password", default="", help="mật khẩu")
+    p.add_argument("--register", action="store_true", help="đăng ký tài khoản nếu đăng nhập báo sai (tiện cho thử nghiệm)")
+    p.add_argument("--token", default="", help="access token có sẵn, thay cho --email/--password")
     p.add_argument("--language", default="vi", choices=["vi", "en"])
     p.add_argument("--mode", default="transcribe", choices=["transcribe", "summarize"])
     p.add_argument("--chunk-sec", type=float, default=5.0)

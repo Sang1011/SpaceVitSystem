@@ -111,6 +111,7 @@ services:
       ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       AiService__BaseUrl: http://ai-service:8000
       AiService__ApiKey: ${AI_SERVICE_TOKEN}
+      Auth__Jwt__Key: ${JWT_KEY}      # >= 32 ký tự ngẫu nhiên; thiếu thì API từ chối khởi động và báo rõ lý do
       Media__RootPath: /data/media     # bắt buộc: nếu thiếu, backend ghi file vào /app/data/media và AI service không thấy
     volumes:
       - *media

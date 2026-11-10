@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using SVS.Application.Auth;
 using SVS.Application.Common.Interfaces;
 using SVS.Application.Transcription;
 using SVS.Infrastructure.AiService;
@@ -23,6 +24,7 @@ public static class DependencyInjection
         services.Configure<AiServiceOptions>(configuration.GetSection("AiService"));
         services.Configure<MediaOptions>(configuration.GetSection("Media"));
         services.Configure<LiveOptions>(configuration.GetSection("Live"));
+        services.Configure<AuthOptions>(configuration.GetSection("Auth"));
 
         services.AddHttpClient<IAiJobClient, HttpAiJobClient>(ConfigureAiClient);
         services.AddHttpClient<ILiveAiClient, HttpLiveAiClient>(ConfigureAiClient);

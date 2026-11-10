@@ -13,6 +13,9 @@ public class LiveSession
 
     public LiveSessionStatus Status { get; set; } = LiveSessionStatus.Active;
 
+    /// <summary>Chủ phiên: chỉ người này (hoặc Owner của Space) được gửi chunk, dừng, hủy. Null với dữ liệu cũ.</summary>
+    public Guid? CreatedByUserId { get; set; }
+
     public string Language { get; set; } = "vi";
     public string OutputLanguage { get; set; } = "vi";
 

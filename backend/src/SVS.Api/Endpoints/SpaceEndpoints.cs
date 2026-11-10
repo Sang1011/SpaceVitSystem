@@ -1,42 +1,67 @@
-using Microsoft.EntityFrameworkCore;
-using SVS.Application.Common.Interfaces;
+using SVS.Application.Common.Exceptions;
+using SVS.Application.Spaces;
 using SVS.Domain.Entities;
 
 namespace SVS.Api.Endpoints;
 
-public sealed record CreateSpaceRequest(string? Name);
-public sealed record SpaceDto(Guid Id, string Name, DateTimeOffset CreatedAt);
+public sealed record SpaceNameRequest(string? Name);
+public sealed record ChangeRoleRequest(string? Role);
+public sealed record InviteRequest(string? Email, string? Role);
+public sealed record AcceptInvitationRequest(string? Code);
 
-/// <summary>Tạo và liệt kê Space ("phòng"). Tối thiểu để thử luồng ghi âm; chưa có chủ sở hữu và thành viên.</summary>
+/// <summary>
+/// Space ("phòng"), thành viên và lời mời. Vai trò: Owner (quản lý), Editor (tạo nội dung), Viewer (chỉ xem).
+/// Người không phải thành viên nhận 404; thành viên thiếu quyền nhận 403.
+/// </summary>
 public static class SpaceEndpoints
 {
     public static IEndpointRouteBuilder MapSpaceEndpoints(this IEndpointRouteBuilder app)
     {
-        // TODO(auth): chưa có đăng nhập nên ai cũng tạo/xem được mọi Space. Khi có auth: người tạo trở thành Owner
-        // (SpaceMember) và danh sách chỉ gồm các Space mà người dùng là thành viên.
         var api = app.MapGroup("/api/spaces").WithTags("Spaces");
-        api.MapGet("", List);
-        api.MapPost("", Create);
+        api.MapGet("", async (SpaceService s, CancellationToken ct) => Results.Ok(await s.ListAsync(ct)));
+        api.MapPost("", async (SpaceNameRequest r, SpaceService s, CancellationToken ct) =>
+        {
+            var space = await s.CreateAsync(r.Name, ct);
+            return Results.Created($"/api/spaces/{space.Id}", space);
+        });
+        api.MapPut("/{spaceId:guid}", async (Guid spaceId, SpaceNameRequest r, SpaceService s, CancellationToken ct) =>
+            Results.Ok(await s.RenameAsync(spaceId, r.Name, ct)));
+        api.MapPost("/{spaceId:guid}/archive", async (Guid spaceId, SpaceService s, CancellationToken ct) =>
+        {
+            await s.ArchiveAsync(spaceId, ct);
+            return Results.NoContent();
+        });
+
+        api.MapGet("/{spaceId:guid}/members", async (Guid spaceId, SpaceService s, CancellationToken ct) =>
+            Results.Ok(await s.ListMembersAsync(spaceId, ct)));
+        api.MapPut("/{spaceId:guid}/members/{userId:guid}", async (Guid spaceId, Guid userId, ChangeRoleRequest r, SpaceService s, CancellationToken ct) =>
+        {
+            await s.ChangeRoleAsync(spaceId, userId, ParseRole(r.Role), ct);
+            return Results.NoContent();
+        });
+        api.MapDelete("/{spaceId:guid}/members/{userId:guid}", async (Guid spaceId, Guid userId, SpaceService s, CancellationToken ct) =>
+        {
+            await s.RemoveMemberAsync(spaceId, userId, ct);
+            return Results.NoContent();
+        });
+
+        api.MapGet("/{spaceId:guid}/invitations", async (Guid spaceId, SpaceService s, CancellationToken ct) =>
+            Results.Ok(await s.ListInvitationsAsync(spaceId, ct)));
+        api.MapPost("/{spaceId:guid}/invitations", async (Guid spaceId, InviteRequest r, SpaceService s, CancellationToken ct) =>
+            Results.Created($"/api/spaces/{spaceId}/invitations", await s.InviteAsync(spaceId, r.Email, ParseRole(r.Role), ct)));
+        api.MapDelete("/{spaceId:guid}/invitations/{invitationId:guid}", async (Guid spaceId, Guid invitationId, SpaceService s, CancellationToken ct) =>
+        {
+            await s.RevokeInvitationAsync(spaceId, invitationId, ct);
+            return Results.NoContent();
+        });
+
+        app.MapPost("/api/invitations/accept", async (AcceptInvitationRequest r, SpaceService s, CancellationToken ct) =>
+            Results.Ok(await s.AcceptInvitationAsync(r.Code, ct))).WithTags("Spaces");
         return app;
     }
 
-    private static async Task<IResult> List(IApplicationDbContext db, CancellationToken ct)
-    {
-        var items = await db.Spaces.AsNoTracking()
-            .Where(s => !s.IsArchived).OrderByDescending(s => s.CreatedAt).Take(50)
-            .Select(s => new SpaceDto(s.Id, s.Name, s.CreatedAt)).ToListAsync(ct);
-        return Results.Ok(items);
-    }
-
-    private static async Task<IResult> Create(CreateSpaceRequest request, IApplicationDbContext db, CancellationToken ct)
-    {
-        var name = request.Name?.Trim();
-        if (string.IsNullOrEmpty(name) || name.Length > 100)
-            return Results.BadRequest(new { error = "Tên phòng phải có 1 đến 100 ký tự" });
-
-        var space = new Space { Name = name };
-        db.Spaces.Add(space);
-        await db.SaveChangesAsync(ct);
-        return Results.Created($"/api/spaces/{space.Id}", new SpaceDto(space.Id, space.Name, space.CreatedAt));
-    }
+    private static SpaceRole ParseRole(string? role) =>
+        Enum.TryParse<SpaceRole>(role, ignoreCase: true, out var parsed) && Enum.IsDefined(parsed)
+            ? parsed
+            : throw AppException.Validation("Vai trò phải là Owner, Editor hoặc Viewer");
 }

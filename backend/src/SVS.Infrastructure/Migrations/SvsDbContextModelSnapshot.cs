@@ -40,6 +40,9 @@ namespace SVS.Infrastructure.Migrations
                     b.Property<DateTimeOffset?>("CompletedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Error")
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
@@ -105,6 +108,8 @@ namespace SVS.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CreatedByUserId");
+
                     b.HasIndex("RecordingId")
                         .IsUnique();
 
@@ -150,9 +155,14 @@ namespace SVS.Infrastructure.Migrations
                     b.Property<Guid>("SpaceId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("UploadedByUserId")
+                        .HasColumnType("uuid");
+
                     b.HasKey("Id");
 
                     b.HasIndex("SpaceId");
+
+                    b.HasIndex("UploadedByUserId");
 
                     b.ToTable("Recordings");
                 });
@@ -193,6 +203,48 @@ namespace SVS.Infrastructure.Migrations
                     b.ToTable("RecordingChunks");
                 });
 
+            modelBuilder.Entity("SVS.Domain.Entities.RefreshToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("FamilyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ReplacedByTokenId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .IsConcurrencyToken()
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FamilyId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("RefreshTokens");
+                });
+
             modelBuilder.Entity("SVS.Domain.Entities.Space", b =>
                 {
                     b.Property<Guid>("Id")
@@ -213,6 +265,58 @@ namespace SVS.Infrastructure.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Spaces");
+                });
+
+            modelBuilder.Entity("SVS.Domain.Entities.SpaceInvitation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("AcceptedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("AcceptedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CodeHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<Guid>("SpaceId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CodeHash")
+                        .IsUnique();
+
+                    b.HasIndex("SpaceId", "Email");
+
+                    b.ToTable("SpaceInvitations");
                 });
 
             modelBuilder.Entity("SVS.Domain.Entities.SpaceMember", b =>
@@ -377,6 +481,11 @@ namespace SVS.Infrastructure.Migrations
 
             modelBuilder.Entity("SVS.Domain.Entities.LiveSession", b =>
                 {
+                    b.HasOne("SVS.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("SVS.Domain.Entities.Recording", "Recording")
                         .WithMany()
                         .HasForeignKey("RecordingId")
@@ -394,6 +503,11 @@ namespace SVS.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("SVS.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UploadedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("Space");
                 });
 
@@ -406,6 +520,28 @@ namespace SVS.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("LiveSession");
+                });
+
+            modelBuilder.Entity("SVS.Domain.Entities.RefreshToken", b =>
+                {
+                    b.HasOne("SVS.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("SVS.Domain.Entities.SpaceInvitation", b =>
+                {
+                    b.HasOne("SVS.Domain.Entities.Space", "Space")
+                        .WithMany()
+                        .HasForeignKey("SpaceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Space");
                 });
 
             modelBuilder.Entity("SVS.Domain.Entities.SpaceMember", b =>

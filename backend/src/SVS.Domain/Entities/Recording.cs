@@ -22,7 +22,8 @@ public class Recording
     public double? DurationSec { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
-    // TODO(auth): thêm UploadedByUserId khi có đăng nhập
+    /// <summary>Người tải lên hoặc bắt đầu ghi âm. Null với dữ liệu tạo trước khi có đăng nhập.</summary>
+    public Guid? UploadedByUserId { get; set; }
 
     public List<TranscriptionJob> Jobs { get; set; } = new();
     public List<TranscriptSegment> Segments { get; set; } = new();
